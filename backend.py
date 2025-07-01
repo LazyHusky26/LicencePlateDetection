@@ -1,4 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+# backend.py
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 import cv2
 from ultralytics import YOLO
@@ -10,14 +11,17 @@ import difflib
 import pandas as pd
 from typing import List, Dict, Any
 from pydantic import BaseModel
+import numpy as np
+import json
 
 app = FastAPI()
 
 # Load model
 model = YOLO(r'C:\\Personal\\Code\\Internship2\\no_plates_detection\\uparrow_2127_images.pt')
 
-# Storage for processing results
+# Storage for processing results and frame indexes
 processing_results = {}
+frame_indexes = {}
 
 class VideoUpload(BaseModel):
     filename: str
@@ -63,18 +67,34 @@ def consensus_text(texts):
             consensus_chars.append(most_common_char)
     return ''.join(consensus_chars).strip()
 
+def build_frame_index(video_path):
+    cap = cv2.VideoCapture(video_path)
+    frame_index = {}
+    frame_num = 0
+    
+    while True:
+        pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+        frame_index[frame_num] = pos_msec
+        ret = cap.grab()  # Fast frame skip
+        if not ret:
+            break
+        frame_num += 1
+    
+    cap.release()
+    return frame_index
+
 @app.post("/upload_video/")
 async def upload_video(file: UploadFile = File(...)):
     try:
-        # Generate unique ID for this video processing
         video_id = str(hash(file.filename))[:10]
-        
-        # Save video to temp file
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(file.file.read())
         video_path = tfile.name
         
-        # Initialize processing results
+        # Build frame index immediately
+        frame_index = build_frame_index(video_path)
+        frame_indexes[video_id] = frame_index
+        
         processing_results[video_id] = {
             'video_path': video_path,
             'plate_log': pd.DataFrame(columns=['Detected Text', 'Frame Number', 'Bounding Box']),
@@ -112,11 +132,12 @@ async def process_video(video_id: str):
         ocr_history = defaultdict(list)
         
         while success:
-            success, frame = cap.read()
-            if not success:
-                break
-
-            if count % frame_skip == 0:
+            success = cap.grab()  # Fast frame grab
+            if count % frame_skip == 0 and success:
+                ret, frame = cap.retrieve()
+                if not ret:
+                    continue
+                    
                 results = model.predict(
                     source=frame,
                     conf=0.35,
@@ -188,9 +209,14 @@ async def process_video(video_id: str):
 
         cap.release()
         
-        # Save results (without generating Excel)
+        # Save results
         processing_results[video_id]['plate_log'] = plate_log
         processing_results[video_id]['processed'] = True
+        
+        # Save to Excel
+        excel_path = f"plate_log_{video_id}.xlsx"
+        plate_log.to_excel(excel_path, index=False)
+        processing_results[video_id]['excel_path'] = excel_path
         
         return {
             "status": "success",
@@ -226,8 +252,8 @@ async def search_plates(request: SearchRequest):
     else:
         return {"matches": [], "count": 0}
 
-@app.get("/get_frame/{video_id}/{frame_number}")
-async def get_frame(video_id: str, frame_number: int):
+@app.get("/get_frame_with_specific_plate/{video_id}/{frame_number}/{plate_text}")
+async def get_frame_with_specific_plate(video_id: str, frame_number: int, plate_text: str):
     if video_id not in processing_results:
         raise HTTPException(status_code=404, detail="Video not found")
     
@@ -235,29 +261,37 @@ async def get_frame(video_id: str, frame_number: int):
     plate_log = processing_results[video_id]['plate_log']
     
     cap = cv2.VideoCapture(video_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    
+    # Use frame index for faster seeking
+    if video_id in frame_indexes and frame_number in frame_indexes[video_id]:
+        cap.set(cv2.CAP_PROP_POS_MSEC, frame_indexes[video_id][frame_number])
+    else:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    
     success, frame = cap.read()
     cap.release()
     
     if not success:
         raise HTTPException(status_code=404, detail="Frame not found")
     
-    # Get plates for this frame
-    frame_plates = plate_log[plate_log['Frame Number'] == frame_number]
+    # Get only the specific plate for this frame
+    frame_plates = plate_log[
+        (plate_log['Frame Number'] == frame_number) & 
+        (plate_log['Detected Text'].str.contains(plate_text, case=False, regex=False))
+    ]
     
-    # Draw bounding boxes
+    # Draw bounding boxes only for matching plates
     for _, row in frame_plates.iterrows():
-        box = row['Bounding Box']
+        box = eval(row['Bounding Box']) if isinstance(row['Bounding Box'], str) else row['Bounding Box']
         x1, y1, x2, y2 = box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(frame, row['Detected Text'], (x1, y1 - 10 if y1 - 10 > 10 else y1 + 20),
+        text_pos = (x1, y1 - 10 if y1 - 10 > 10 else y1 + 20)
+        cv2.putText(frame, row['Detected Text'], text_pos,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     
-    # Save frame as temporary image
-    temp_img_path = f"temp_frame_{video_id}_{frame_number}.jpg"
-    cv2.imwrite(temp_img_path, frame)
-    
-    return FileResponse(temp_img_path)
+    # Compress image before sending
+    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return Response(content=buffer.tobytes(), media_type="image/jpeg")
 
 @app.get("/download_excel/{video_id}")
 async def download_excel(video_id: str):
@@ -267,10 +301,9 @@ async def download_excel(video_id: str):
     if not processing_results[video_id]['processed']:
         raise HTTPException(status_code=400, detail="Video not processed yet")
     
-    # Generate Excel file only when requested
-    plate_log = processing_results[video_id]['plate_log']
-    excel_path = f"plate_log_{video_id}.xlsx"
-    plate_log.to_excel(excel_path, index=False)
+    excel_path = processing_results[video_id].get('excel_path')
+    if not excel_path or not os.path.exists(excel_path):
+        raise HTTPException(status_code=404, detail="Excel file not found")
     
     return FileResponse(
         excel_path,
