@@ -23,3 +23,26 @@ A web application for detecting vehicle number plates from uploaded video files.
 
 ---
 
+## 🚀 How to Run
+
+```bash
+git clone https://github.com/LazyHusky26/LicencePlateDetection.git
+```
+
+Install required libraries
+
+```
+pip install -r requirements.txt
+```
+
+Run the backend FastAPI server
+
+```bash
+uvicorn backend:app --reload
+```
+
+Run the frontend Streamlit app
+
+```bash
+streamlit run frontend.py
+```
