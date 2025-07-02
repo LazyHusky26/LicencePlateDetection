@@ -1,6 +1,6 @@
 # backend.py
 from fastapi import FastAPI, UploadFile, File, HTTPException, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 import cv2
 from ultralytics import YOLO
 import tempfile
@@ -9,10 +9,7 @@ from collections import defaultdict, Counter
 import os
 import difflib
 import pandas as pd
-from typing import List, Dict, Any
 from pydantic import BaseModel
-import numpy as np
-import json
 
 app = FastAPI()
 

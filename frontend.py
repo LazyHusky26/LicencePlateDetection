@@ -2,12 +2,9 @@
 import streamlit as st
 import requests
 import pandas as pd
-import difflib
-import os
-from io import BytesIO
 
 # API configuration
-API_BASE_URL = "http://localhost:8000"  # Update with your backend URL
+API_BASE_URL = "http://localhost:8000"
 
 st.title("🚗 Number Plate Detection from Video")
 st.write("Upload a video, and the system will detect number plates from every frame, display OCR consensus text above boxes, and log the details into an Excel sheet.")
