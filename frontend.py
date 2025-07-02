@@ -145,7 +145,7 @@ if st.session_state.video_processed:
             key="excel_download_btn"
         )
 
-# Single search functionality section
+# Search functionality
 search_term = st.text_input(
     "Search for a number plate:",
     key="plate_search_input"
@@ -174,9 +174,11 @@ if search_term and st.session_state.video_processed:
             )
             
             if selected_row:
-                frame_image = get_frame_image(selected_row.frame_number, selected_row.detected_text)
-                if frame_image:
-                    st.subheader(f"📸 Frame {selected_row.frame_number} - Plate: {selected_row.detected_text}")
-                    st.image(frame_image, channels="RGB")
+                # Get the image bytes without downloading
+                frame_bytes = get_frame_image(selected_row.frame_number, selected_row.detected_text)
+                if frame_bytes:
+                    # Display the image directly in Streamlit
+                    st.subheader(f"📸 Frame {selected_row.frame_number}")
+                    st.image(frame_bytes, channels="RGB")
     elif search_results:
         st.warning("No matching plates found.")
